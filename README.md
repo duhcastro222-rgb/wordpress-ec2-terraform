@@ -184,6 +184,31 @@ aws ssm get-parameter \
   --query Parameter.Value --output text
 ```
 
+> **Reproduzindo no Windows com Git Bash:** exporte `MSYS_NO_PATHCONV=1` antes
+> de qualquer comando que receba um caminho de parâmetro do SSM. O Git Bash
+> converte argumentos que se parecem com caminho Unix em caminho Windows, e
+> `/newchance/dev/db/password` chega na AWS como
+> `C:/Program Files/Git/newchance/dev/db/password`. O erro devolvido é
+> `ParameterNotFound`, que aponta para o lugar errado e custa tempo de
+> diagnóstico.
+>
+> ```bash
+> export MSYS_NO_PATHCONV=1
+> ```
+>
+> No PowerShell e em Linux o problema não existe.
+
+Para confirmar que o segredo está de fato cifrado em repouso, peça o parâmetro
+**sem** `--with-decryption`:
+
+```bash
+aws ssm get-parameter --name /newchance/dev/wordpress/admin-password \
+  --region us-east-1 --query Parameter.Value --output text
+# AQICAHijJhmF0BRPRft9e1VOBLoYUQrNPDN0BFYMW4Wxub7u7QHfqVNEaM+V...
+```
+
+O retorno é o blob cifrado pela chave KMS, não a senha.
+
 ### Acesso administrativo à instância
 
 Dois caminhos, em ordem de preferência:
