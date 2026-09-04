@@ -370,7 +370,12 @@ resource "aws_instance" "wordpress" {
   # 5 minutos e gratuito e suficiente aqui.
   monitoring = false
 
-  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
+  # Comprimido com gzip antes de enviar. A AWS limita user_data a 16.384 bytes
+  # e este script, com a documentacao das decisoes, ocupa cerca de 17 KB. O
+  # cloud-init detecta e descomprime gzip automaticamente, e o script cai para
+  # cerca de 6,6 KB, ou 40% do limite. A alternativa seria remover comentario
+  # para caber, o que trocaria documentacao por espaco sem necessidade.
+  user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
     aws_region       = var.aws_region
     swap_size_mb     = var.swap_size_mb
     db_name          = var.db_name
@@ -380,7 +385,7 @@ resource "aws_instance" "wordpress" {
     site_title       = var.site_title
     admin_user       = var.admin_user
     admin_email      = var.admin_email
-  })
+  }))
 
   # Mudanca no script de bootstrap recria a instancia. Sem isso o Terraform
   # apenas atualiza o atributo e o script novo nunca roda, deixando o estado

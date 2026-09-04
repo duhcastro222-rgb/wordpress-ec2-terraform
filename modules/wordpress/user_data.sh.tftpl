@@ -15,6 +15,15 @@
 exec > >(tee -a /var/log/wordpress-bootstrap.log) 2>&1
 set -euo pipefail
 
+# NUNCA habilitar "set -x" aqui. O rastreio de comandos imprime o valor de toda
+# variavel expandida, incluindo a senha lida do SSM, e o log do cloud-init
+# permanece legivel na instancia e recuperavel pelo console. Depuracao com
+# modo verboso e uma das formas mais comuns de vazar segredo em producao.
+
+# O cloud-init executa este script sem ambiente de login, portanto HOME vem
+# vazio. Sem isso o WP-CLI tenta gravar cache em /.wp-cli, na raiz do sistema.
+export HOME=/root
+
 WP_DIR=/var/www/wordpress
 echo "===== bootstrap iniciado em $(date -Is) ====="
 
@@ -188,7 +197,28 @@ chmod 755 /usr/local/bin/wp
 
 echo "--- baixando WordPress em pt_BR ---"
 mkdir -p $WP_DIR
-/usr/local/bin/wp core download --path=$WP_DIR --locale=pt_BR --allow-root
+
+# Download e extracao com curl e tar, e NAO com "wp core download".
+#
+# Comportamento verificado nesta AMI: sob PHP 8.5, o WP-CLI 2.12 baixa o
+# tarball, confirma o hash MD5 e extrai zero arquivo, encerrando sem imprimir
+# mensagem de erro. Como o wp-cli e um phar interpretado pelo PHP, ele depende
+# da versao do runtime; tar e ferramenta de sistema e nao depende de nada.
+# Toda etapa que pode ser feita por ferramenta de sistema deve ser.
+curl -sfL --retry 3 --retry-delay 5 \
+  https://br.wordpress.org/latest-pt_BR.tar.gz -o /tmp/wordpress.tar.gz
+tar -xzf /tmp/wordpress.tar.gz -C /tmp
+cp -a /tmp/wordpress/. $WP_DIR/
+rm -rf /tmp/wordpress /tmp/wordpress.tar.gz
+
+# Verificacao explicita do resultado, e nao do codigo de saida da ferramenta.
+# Confiar no exit code foi exatamente o que deixou a falha anterior passar em
+# silencio: o comando "terminava" e o diretorio ficava vazio.
+if [ ! -f "$WP_DIR/wp-settings.php" ]; then
+  echo "ERRO FATAL: extracao nao produziu wp-settings.php em $WP_DIR"
+  exit 1
+fi
+echo "WordPress extraido: $(ls -1 $WP_DIR | wc -l) itens na raiz do site"
 
 echo "--- gerando wp-config.php ---"
 # O wp-config e criado pelo WP-CLI, que gera salts unicos. Salt reaproveitado
@@ -222,6 +252,11 @@ define('WP_DEBUG', false);
 define('WP_DEBUG_DISPLAY', false);
 PHPEXTRA
 
+if [ ! -f "$WP_DIR/wp-config.php" ]; then
+  echo "ERRO FATAL: wp-config.php nao foi gerado"
+  exit 1
+fi
+
 echo "--- executando instalacao do WordPress ---"
 /usr/local/bin/wp core install \
   --path=$WP_DIR \
@@ -232,6 +267,12 @@ echo "--- executando instalacao do WordPress ---"
   --admin_email='${admin_email}' \
   --skip-email \
   --allow-root
+
+if ! /usr/local/bin/wp core is-installed --path=$WP_DIR --allow-root; then
+  echo "ERRO FATAL: WordPress nao ficou instalado"
+  exit 1
+fi
+echo "WordPress instalado e respondendo ao WP-CLI"
 
 # Remove o plugin Hello Dolly e o tema de exemplo: superficie de ataque que
 # ninguem usa continua sendo superficie de ataque.
@@ -308,22 +349,23 @@ http {
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header X-Permitted-Cross-Domain-Policies "none" always;
 
-        location / {
-            try_files $uri $uri/ /index.php?$args;
-        }
-
-        location ~ \.php$ {
-            try_files $uri =404;
-            include        fastcgi_params;
-            fastcgi_pass   unix:/run/php-fpm/www.sock;
-            fastcgi_index  index.php;
-            fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
-            fastcgi_read_timeout 60;
-        }
+        # ----------------------------------------------------------------------
+        # A ORDEM DOS BLOCOS ABAIXO E UM CONTROLE DE SEGURANCA, NAO ESTILO.
+        #
+        # Entre varios location com expressao regular, o nginx aplica o PRIMEIRO
+        # que casa e para. Se o bloco generico "~ \.php$" vier antes das
+        # negacoes especificas, ele captura /wp-content/uploads/shell.php e
+        # entrega ao php-fpm, deixando o deny all seguinte inalcancavel. Foi
+        # exatamente o que aconteceu na primeira versao desta configuracao: a
+        # regra existia, parecia correta na leitura, e nao surtia efeito nenhum.
+        #
+        # Regra: negacoes especificas primeiro, execucao de PHP depois.
+        # ----------------------------------------------------------------------
 
         # xmlrpc.php aceita centenas de tentativas de senha em uma unica
         # requisicao (system.multicall) e ainda serve de amplificador de DDoS
         # por pingback. Nao e usado por nada nesta instalacao.
+        # Match exato tem precedencia sobre qualquer regex no nginx.
         location = /xmlrpc.php {
             deny all;
             access_log off;
@@ -337,17 +379,32 @@ http {
             deny all;
         }
 
-        # Arquivos ocultos, backups e dumps eventualmente esquecidos na raiz.
-        location ~ /\. {
+        # wp-includes nao deve servir PHP diretamente ao visitante.
+        location ~* ^/wp-includes/.*\.php$ {
             deny all;
         }
+
+        # Arquivos ocultos, backups e dumps eventualmente esquecidos na raiz.
+        location ~ /\.(?!well-known) {
+            deny all;
+        }
+
         location ~* \.(sql|bak|log|ini|old|swp)$ {
             deny all;
         }
 
-        # Expoe apenas o necessario de wp-includes.
-        location ~* ^/wp-includes/.*\.php$ {
-            deny all;
+        # Execucao de PHP: vem DEPOIS de todas as negacoes acima.
+        location ~ \.php$ {
+            try_files $uri =404;
+            include        fastcgi_params;
+            fastcgi_pass   unix:/run/php-fpm/www.sock;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_read_timeout 60;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.php?$args;
         }
     }
 }
