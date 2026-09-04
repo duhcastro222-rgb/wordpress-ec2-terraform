@@ -14,10 +14,10 @@ setup do WordPress.
 - [Acessar o WordPress](#acessar-o-wordpress)
 - [Destruir o ambiente](#destruir-o-ambiente)
 - [Controles de segurança](#controles-de-segurança)
+- [Por que o CI de segurança é a peça central](#por-que-o-ci-de-segurança-é-a-peça-central)
 - [Decisões de arquitetura](#decisões-de-arquitetura)
 - [Custo real](#custo-real)
 - [Fora de escopo e por quê](#fora-de-escopo-e-por-quê)
-- [Problemas encontrados na execução real](#problemas-encontrados-na-execução-real)
 - [Convenções](#convenções)
 
 ---
@@ -311,6 +311,109 @@ O requisito 3 do desafio deixa de ser promessa e passa a ser controle verificado
 
 ---
 
+## Por que o CI de segurança é a peça central
+
+Todo controle listado acima tem o mesmo ponto fraco: ele depende de alguém ter
+escrito o código certo, e de ninguém apagar isso depois. O CI de segurança é o
+que transforma intenção em garantia — e é a diferença entre um repositório que
+*diz* ser seguro e um que *prova* a cada Pull Request.
+
+### O problema que ele resolve
+
+Sem pipeline, a segurança da infraestrutura depende de três coisas frágeis:
+
+| Sem CI | Com CI |
+|---|---|
+| O revisor precisa lembrar de olhar cifragem, IMDSv2, egress e curinga de IAM em cada PR | A ferramenta olha os quatro, sempre, em segundos |
+| Um segredo commitado só é descoberto quando alguém o encontra — ou quando alguém o usa | Falha o PR antes do merge |
+| Uma regra de segurança removida por engano passa como "refatoração" | O achado reaparece imediatamente |
+| A qualidade da revisão varia com o cansaço, o prazo e a experiência de quem revisa | Não varia |
+
+Revisão humana continua indispensável, mas para o que exige julgamento. Para
+"este bucket está cifrado?" e "esta porta está aberta para o mundo?", máquina
+não esquece e não tem sexta-feira à noite.
+
+### O que a pipeline deste projeto faz
+
+Três jobs, em todo PR para `develop` e `main`:
+
+| Job | Ferramenta | O que verifica |
+|---|---|---|
+| `terraform` | Terraform | `fmt -check`, `init -backend=false`, `validate` |
+| `iac-misconfig` | **Trivy** | Configuração insegura no HCL: recurso sem cifragem, porta aberta ao mundo, IMDSv1 permitido, IAM com curinga |
+| `secrets` | **Gitleaks** | Credencial versionada em **qualquer commit do histórico** |
+
+### As decisões que fazem a pipeline ser segura, e não só útil
+
+Uma pipeline de segurança mal configurada é ela própria um vetor de ataque —
+ela roda código, tem token e enxerga o repositório inteiro.
+
+**Nenhuma credencial da AWS na pipeline.** Toda checagem é estática: o `init`
+roda com `-backend=false` e o `validate` não fala com a API da AWS. Pipeline que
+não precisa de segredo não pode vazar segredo — e não há chave nem OIDC para
+gerenciar, rotacionar ou perder.
+
+**`permissions: contents: read`.** O `GITHUB_TOKEN` padrão pode ter escopo bem
+mais amplo, inclusive escrita. Se um passo da pipeline for comprometido, o token
+que ele carrega é o limite exato do dano.
+
+**Toda action fixada por SHA de commit, nunca por tag.** Tag no Git é mutável:
+quem controla o repositório de uma action pode apontar `v5` para outro commit, e
+a pipeline passa a executar código diferente sem que uma única linha mude neste
+repositório. Foi exatamente o vetor do comprometimento de
+`tj-actions/changed-files` em 2025, que expôs segredos de milhares de
+repositórios. SHA é imutável.
+
+```yaml
+uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+```
+
+O comentário registra a versão para que a atualização continue legível.
+
+**Gitleaks com `fetch-depth: 0`.** Varre o histórico completo, não a árvore
+atual. Segredo removido num commit posterior continua recuperável no histórico —
+e continua comprometido. Dar `git rm` numa chave não a desvaza.
+
+**Trivy e Gitleaks se complementam, não se sobrepõem.** O Trivy analisa
+configuração insegura na infraestrutura; o Gitleaks procura credencial
+versionada. O Trivy também varre segredo, mas só sobre a árvore de arquivos —
+não sobre o histórico do git, que é justamente onde a evidência fica.
+
+**`.trivyignore` com justificativa obrigatória.** Nada entra no arquivo de
+exceções sem a razão escrita ao lado e um critério de reavaliação. Arquivo de
+ignore sem explicação é pior que nenhum: transforma um alerta legítimo em
+silêncio permanente que ninguém sabe por que existe. **Risco aceito é uma
+decisão; risco silenciado é uma dívida.**
+
+### O ciclo funcionando de verdade
+
+O valor da pipeline não é passar — é apontar. Neste projeto o Trivy reportou
+três achados de egress irrestrito. A revisão que ele provocou mostrou que
+**duas daquelas regras eram desnecessárias e foram removidas do código**
+(`80/tcp`, que nunca foi usado porque todo o bootstrap é HTTPS, e `123/udp`, que
+nunca teve efeito porque o Amazon Time Sync responde em endereço link-local que
+Security Group não filtra). A terceira, `443/tcp`, é inevitável e ficou
+declarada como exceção justificada.
+
+Resultado: a superfície de saída caiu de três regras abertas para uma, com a
+razão registrada. Um alerta de ferramenta serve para provocar revisão, não para
+ser silenciado.
+
+### Três camadas independentes para o requisito "nenhuma credencial versionada"
+
+```
+1. .gitignore                          impede o commit acidental
+2. GitHub secret scanning + push       BLOQUEIA o push, no servidor
+   protection
+3. Gitleaks no CI                      FALHA o Pull Request se passou pelas
+                                       duas primeiras
+```
+
+As três são independentes e nenhuma depende de disciplina humana. É isso que
+separa um controle de uma boa intenção.
+
+---
+
 ## Decisões de arquitetura
 
 Detalhe em [`docs/adr/`](docs/adr/). Resumo:
@@ -400,139 +503,28 @@ específica — custo, prazo ou ausência de requisito.
 
 ---
 
-## Problemas encontrados na execução real
-
-Registro honesto do que quebrou. Todos diagnosticados por SSM Session Manager,
-sem SSH e sem console.
-
-### 1. `wp core download` não extrai sob PHP 8.5
-
-O WP-CLI 2.12 baixava o tarball, confirmava o hash MD5 e **extraía zero
-arquivo**, encerrando sem imprimir erro. O diretório do site ficava vazio e o
-cloud-init abortava sem mensagem.
-
-**Correção:** download com `curl`, extração com `tar`. O wp-cli é um phar
-interpretado pelo PHP e depende da versão do runtime; `tar` é ferramenta de
-sistema. O WP-CLI segue em uso para `config create` e `core install`, que não
-manipulam arquivo compactado.
-
-**Lição aplicada em todo o script:** verificar o *resultado*, não o código de
-saída da ferramenta. Foram acrescentadas checagens explícitas de
-`wp-settings.php`, `wp-config.php` e `wp core is-installed`.
-
-### 2. `user_data` acima do limite de 16.384 bytes
-
-O script cresceu para 17.182 bytes e a AWS rejeitou.
-
-**Correção:** `user_data_base64` com `base64gzip()`. O cloud-init descomprime
-gzip automaticamente e o script cai para cerca de 7 KB. A alternativa seria
-apagar comentário para caber — trocar documentação por espaço sem necessidade.
-
-### 3. Regra de negação do nginx inalcançável
-
-A regra que nega execução de PHP em `wp-content/uploads` **não surtia efeito
-nenhum**. Entre `location` com regex, o nginx aplica o primeiro que casa: o
-bloco genérico `~ \.php$` estava antes das negações, então
-`/wp-content/uploads/shell.php` seguia para o php-fpm e nunca alcançava o
-`deny all`.
-
-Isso deixava aberto o caminho mais curto de upload malicioso para webshell —
-precisamente o que a regra pretendia fechar. A regra existia, parecia correta
-na leitura, e era decorativa.
-
-**Detectado por teste, não por revisão:**
-
-```
-antes:  GET /wp-content/uploads/teste.php  ->  404   (php-fpm, arquivo inexistente)
-depois: GET /wp-content/uploads/teste.php  ->  403   (negado pelo nginx)
-```
-
-### 4. Senha vazada no próprio diagnóstico
-
-Um script de teste com `set -x` **imprimiu a senha do banco em texto claro** na
-saída do comando SSM. É o padrão de vazamento mais comum em depuração real:
-liga-se o modo verboso para investigar e o segredo vai para o terminal, para o
-log de CI, para o ticket.
-
-**Ações:** senha rotacionada com
-`terraform apply -replace='module.wordpress.random_password.db'`, e comentário
-no topo do script proibindo `set -x`, com a razão.
-
-### 5. O CI apontou três falhas na minha própria configuração
-
-O Trivy reportou três `AVD-AWS-0104`, egress irrestrito. A resposta preguiçosa
-seria declarar os três no `.trivyignore`. A revisão mostrou que dois eram sobra:
-
-- **80/tcp de saída removida** — todo o bootstrap usa HTTPS
-- **123/udp de saída removida** — o Amazon Time Sync responde em
-  `169.254.169.123`, endereço link-local que Security Group não filtra. A regra
-  nunca teve efeito
-- **443/tcp mantida** e declarada como exceção justificada
-
-Alerta de ferramenta serve para provocar revisão, não para ser silenciado. Dos
-três achados, dois viraram código removido e um virou exceção escrita.
-
-### 6. Exposição de versão e de `wp-config.php`
-
-Varrendo a instância já pronta, seis caminhos respondiam `200` sem necessidade:
-
-```
-GET /wp-config.php          -> 200   (corpo vazio: o php-fpm executava o arquivo)
-GET /readme.html            -> 200   7.407 bytes, com a versão exata em texto puro
-GET /license.txt            -> 200
-GET /wp-trackback.php       -> 200   vetor de spam
-GET /wp-links-opml.php      -> 200
-GET /wp-admin/install.php   -> 200   instalação já concluída
-
-<meta name="generator" content="WordPress 7.1">   em toda página
-```
-
-O caso do `wp-config.php` merece atenção. O corpo vinha **vazio**, portanto
-nenhuma senha vazava — o PHP executava o arquivo em vez de servi-lo. Mas isso
-depende inteiramente de o handler de PHP estar funcionando. Se o php-fpm cair
-ou o handler for alterado, o nginx passa a servir `.php` como arquivo estático
-e a senha do banco vai para o mundo em texto claro. É um dos incidentes mais
-clássicos que existem, e a mitigação custa três linhas.
-
-Versão exata do WordPress também não é detalhe: é o que permite a um atacante
-escolher um exploit conhecido sem tentativa e erro, e o que faz um scanner
-automatizado marcar o alvo como vulnerável.
-
-**Correção:** `deny all` explícito para os seis caminhos, e um **must-use
-plugin** (`wp-content/mu-plugins/00-newchance-hardening.php`) que remove a meta
-`generator`, os links RSD e wlwmanifest, o parâmetro `?ver=` dos assets,
-desabilita XML-RPC também na aplicação, e troca a mensagem de erro do login por
-uma genérica — a padrão diz "a senha para o usuário X está incorreta", o que
-confirma nomes válidos e permite enumeração antes da força bruta.
-
-Must-use e não plugin comum de propósito: um plugin comum pode ser desativado
-pelo painel por quem tomar a conta de administrador. Must-use não aparece na
-lista e não pode ser desligado por ali.
-
-**Resultado verificado:**
-
-```
-wp-config.php  readme.html  license.txt  wp-trackback.php
-wp-links-opml.php  wp-admin/install.php  wp-content/uploads/*.php   -> 403
-xmlrpc.php                                                          -> 000 (444)
-home  wp-login.php                                                  -> 200
-meta generator                                                      -> ausente
-```
-
----
-
 ## Convenções
 
 Padrão de nomenclatura de recursos, variáveis, arquivos, módulos, tags,
 branches e commits: [`docs/CONVENCOES.md`](docs/CONVENCOES.md).
 
-O padrão foi escrito **antes** da primeira linha de HCL. A prova de que foi
-seguido está num commit específico: quando o projeto foi renomeado de
-`wordpress` para `newchance`, **nenhuma definição de recurso foi tocada**. Como
-a convenção é `{project}-{environment}-{recurso}` e `project` vem de variável, a
-renomeação custou alterar um `default` e os exemplos da documentação. Os 20
-nomes de recurso, o caminho dos segredos no SSM e a tag `Project` derivam da
-mesma origem e acompanharam sozinhos.
+O padrão foi escrito **antes** da primeira linha de HCL.
+
+### Nomes de recurso
+
+Formato `{project}-{environment}-{recurso}`, em `kebab-case`. `project` e
+`environment` vêm de variável e nunca são escritos à mão:
+
+```
+newchance-dev-vpc          newchance-dev-sg-web
+newchance-dev-subnet-public-1a   newchance-dev-role-ec2
+newchance-dev-igw          newchance-dev-ec2
+newchance-dev-rtb-public   /newchance/dev/db/password
+```
+
+Os 20 nomes de recurso, o caminho dos segredos no SSM e a tag `Project` derivam
+todos da mesma origem — o `local.name_prefix` no `main.tf`. Nenhum nome é
+duplicado no código, portanto nenhum pode divergir dos outros.
 
 ### Commits
 
@@ -541,12 +533,15 @@ mesma origem e acompanharam sozinhos.
 tipos de [iuricode/padroes-de-commits](https://github.com/iuricode/padroes-de-commits)
 como referência de vocabulário.
 
-**Sem emoji, por decisão explícita.** A especificação Conventional Commits
-define `tipo(escopo): descrição` e não prevê emoji — o emoji é acréscimo da
-referência brasileira. Mensagem de commit é lida por ferramenta (`git log
---grep`, geradores de changelog) e por pessoa em terminal, onde emoji atrapalha
-alinhamento e não sobrevive a todo encoding. O tipo já carrega a semântica
-inteira.
+```
+feat: adiciona modulo de rede
+fix: corrige ordem dos blocos location do nginx
+ci: adiciona pipeline de analise estatica de seguranca
+docs: adiciona readme de reproducao e registros de decisao
+```
+
+Descrição em português, imperativo, minúscula, sem ponto final. O corpo do
+commit explica o *porquê*; o diff já mostra o *quê*.
 
 ### Branches
 

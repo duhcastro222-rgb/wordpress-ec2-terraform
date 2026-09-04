@@ -137,12 +137,8 @@ usando o conjunto de tipos de
 [iuricode/padroes-de-commits](https://github.com/iuricode/padroes-de-commits)
 como referência de vocabulário.
 
-**Sem emoji, por decisão explícita.** A especificação Conventional Commits
-define `tipo(escopo): descrição` e não prevê emoji; o emoji é um acréscimo da
-referência brasileira. Mensagem de commit é lida por ferramenta (`git log
---grep`, geradores de changelog, parsers de release) e por pessoa em terminal,
-onde emoji atrapalha alinhamento e não sobrevive a todo encoding. O tipo já
-carrega a semântica inteira — o emoji é redundância decorativa.
+Sem emoji: a mensagem carrega apenas `tipo: descrição`, conforme a
+especificação.
 
 | Tipo | Quando usar |
 |---|---|
