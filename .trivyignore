@@ -1,0 +1,42 @@
+# ==============================================================================
+# Excecoes aceitas na analise de configuracao do Trivy.
+#
+# POLITICA: nada entra aqui sem justificativa escrita ao lado. Um arquivo de
+# ignore sem explicacao e pior que nenhum, porque transforma um alerta legitimo
+# em silencio permanente que ninguem sabe por que existe. Risco aceito e uma
+# decisao; risco silenciado e uma divida.
+#
+# Formato: uma linha com o ID da regra, precedida do comentario que explica
+# por que aquele achado e aceitavel NESTE projeto.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# AVD-AWS-0104 - Security group rule allows unrestricted egress to any IP
+# https://avd.aquasec.com/misconfig/aws-0104
+#
+# ACEITO PARA UMA UNICA REGRA: 443/tcp para 0.0.0.0/0.
+#
+# A instancia precisa alcancar tres destinos publicos e de IP variavel:
+#   - wordpress.org e br.wordpress.org, para baixar o core e as atualizacoes
+#   - os repositorios do Amazon Linux 2023, para instalar e corrigir pacotes
+#   - os endpoints do Systems Manager, para o Session Manager e o Parameter Store
+#
+# Restringir destino exigiria VPC Endpoints de interface, cobrados por hora, o
+# que viola a restricao de free tier do projeto. E mesmo pagando por eles,
+# wordpress.org continuaria sendo internet publica.
+#
+# O que FOI feito para reduzir o risco, em vez de apenas aceitar:
+#   - nao existe regra de "todo protocolo, toda porta". A saida e porta a porta.
+#   - DNS restrito ao CIDR da propria VPC, nao ao mundo.
+#   - as regras de egress 80/tcp e 123/udp foram REMOVIDAS por serem
+#     desnecessarias, reduzindo os achados de tres para um.
+#
+# Reavaliar se: o projeto ganhar orcamento para VPC Endpoints, ou se as
+# atualizacoes do WordPress passarem a ser feitas por imagem pre-construida
+# em vez de download em tempo de boot.
+# ------------------------------------------------------------------------------
+AVD-AWS-0104
+
+# O Trivy exibe o ID abreviado (AWS-0104) em algumas versoes e o completo
+# (AVD-AWS-0104) em outras. Ambos declarados para nao depender da versao.
+AWS-0104
