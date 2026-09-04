@@ -1,0 +1,11 @@
+# ==============================================================================
+# Excecoes aceitas na analise de configuracao do Trivy.
+#
+# POLITICA: nada entra aqui sem justificativa escrita ao lado. Um arquivo de
+# ignore sem explicacao e pior que nenhum, porque transforma um alerta legitimo
+# em silencio permanente que ninguem sabe por que existe. Risco aceito e uma
+# decisao; risco silenciado e uma divida.
+#
+# Formato: uma linha com o ID da regra, precedida do comentario que explica
+# por que aquele achado e aceitavel NESTE projeto.
+# ==============================================================================
