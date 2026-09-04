@@ -349,22 +349,23 @@ http {
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;
         add_header X-Permitted-Cross-Domain-Policies "none" always;
 
-        location / {
-            try_files $uri $uri/ /index.php?$args;
-        }
-
-        location ~ \.php$ {
-            try_files $uri =404;
-            include        fastcgi_params;
-            fastcgi_pass   unix:/run/php-fpm/www.sock;
-            fastcgi_index  index.php;
-            fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
-            fastcgi_read_timeout 60;
-        }
+        # ----------------------------------------------------------------------
+        # A ORDEM DOS BLOCOS ABAIXO E UM CONTROLE DE SEGURANCA, NAO ESTILO.
+        #
+        # Entre varios location com expressao regular, o nginx aplica o PRIMEIRO
+        # que casa e para. Se o bloco generico "~ \.php$" vier antes das
+        # negacoes especificas, ele captura /wp-content/uploads/shell.php e
+        # entrega ao php-fpm, deixando o deny all seguinte inalcancavel. Foi
+        # exatamente o que aconteceu na primeira versao desta configuracao: a
+        # regra existia, parecia correta na leitura, e nao surtia efeito nenhum.
+        #
+        # Regra: negacoes especificas primeiro, execucao de PHP depois.
+        # ----------------------------------------------------------------------
 
         # xmlrpc.php aceita centenas de tentativas de senha em uma unica
         # requisicao (system.multicall) e ainda serve de amplificador de DDoS
         # por pingback. Nao e usado por nada nesta instalacao.
+        # Match exato tem precedencia sobre qualquer regex no nginx.
         location = /xmlrpc.php {
             deny all;
             access_log off;
@@ -378,17 +379,32 @@ http {
             deny all;
         }
 
-        # Arquivos ocultos, backups e dumps eventualmente esquecidos na raiz.
-        location ~ /\. {
+        # wp-includes nao deve servir PHP diretamente ao visitante.
+        location ~* ^/wp-includes/.*\.php$ {
             deny all;
         }
+
+        # Arquivos ocultos, backups e dumps eventualmente esquecidos na raiz.
+        location ~ /\.(?!well-known) {
+            deny all;
+        }
+
         location ~* \.(sql|bak|log|ini|old|swp)$ {
             deny all;
         }
 
-        # Expoe apenas o necessario de wp-includes.
-        location ~* ^/wp-includes/.*\.php$ {
-            deny all;
+        # Execucao de PHP: vem DEPOIS de todas as negacoes acima.
+        location ~ \.php$ {
+            try_files $uri =404;
+            include        fastcgi_params;
+            fastcgi_pass   unix:/run/php-fpm/www.sock;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_read_timeout 60;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.php?$args;
         }
     }
 }
