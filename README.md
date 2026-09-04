@@ -447,6 +447,53 @@ seria declarar os três no `.trivyignore`. A revisão mostrou que dois eram sobr
 Alerta de ferramenta serve para provocar revisão, não para ser silenciado. Dos
 três achados, dois viraram código removido e um virou exceção escrita.
 
+### 6. Exposição de versão e de `wp-config.php`
+
+Varrendo a instância já pronta, seis caminhos respondiam `200` sem necessidade:
+
+```
+GET /wp-config.php          -> 200   (corpo vazio: o php-fpm executava o arquivo)
+GET /readme.html            -> 200   7.407 bytes, com a versão exata em texto puro
+GET /license.txt            -> 200
+GET /wp-trackback.php       -> 200   vetor de spam
+GET /wp-links-opml.php      -> 200
+GET /wp-admin/install.php   -> 200   instalação já concluída
+
+<meta name="generator" content="WordPress 7.1">   em toda página
+```
+
+O caso do `wp-config.php` merece atenção. O corpo vinha **vazio**, portanto
+nenhuma senha vazava — o PHP executava o arquivo em vez de servi-lo. Mas isso
+depende inteiramente de o handler de PHP estar funcionando. Se o php-fpm cair
+ou o handler for alterado, o nginx passa a servir `.php` como arquivo estático
+e a senha do banco vai para o mundo em texto claro. É um dos incidentes mais
+clássicos que existem, e a mitigação custa três linhas.
+
+Versão exata do WordPress também não é detalhe: é o que permite a um atacante
+escolher um exploit conhecido sem tentativa e erro, e o que faz um scanner
+automatizado marcar o alvo como vulnerável.
+
+**Correção:** `deny all` explícito para os seis caminhos, e um **must-use
+plugin** (`wp-content/mu-plugins/00-newchance-hardening.php`) que remove a meta
+`generator`, os links RSD e wlwmanifest, o parâmetro `?ver=` dos assets,
+desabilita XML-RPC também na aplicação, e troca a mensagem de erro do login por
+uma genérica — a padrão diz "a senha para o usuário X está incorreta", o que
+confirma nomes válidos e permite enumeração antes da força bruta.
+
+Must-use e não plugin comum de propósito: um plugin comum pode ser desativado
+pelo painel por quem tomar a conta de administrador. Must-use não aparece na
+lista e não pode ser desligado por ali.
+
+**Resultado verificado:**
+
+```
+wp-config.php  readme.html  license.txt  wp-trackback.php
+wp-links-opml.php  wp-admin/install.php  wp-content/uploads/*.php   -> 403
+xmlrpc.php                                                          -> 000 (444)
+home  wp-login.php                                                  -> 200
+meta generator                                                      -> ausente
+```
+
 ---
 
 ## Convenções

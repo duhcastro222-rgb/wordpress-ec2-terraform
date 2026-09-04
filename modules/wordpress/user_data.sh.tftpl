@@ -274,10 +274,94 @@ if ! /usr/local/bin/wp core is-installed --path=$WP_DIR --allow-root; then
 fi
 echo "WordPress instalado e respondendo ao WP-CLI"
 
-# Remove o plugin Hello Dolly e o tema de exemplo: superficie de ataque que
-# ninguem usa continua sendo superficie de ataque.
+# Remove o plugin Hello Dolly, que vem ativado por padrao e nunca e usado.
+# Superficie de ataque que ninguem usa continua sendo superficie de ataque.
 /usr/local/bin/wp plugin delete hello --path=$WP_DIR --allow-root || true
+
+# Remove o comentario de exemplo, que expoe um autor ficticio e um link externo.
+/usr/local/bin/wp comment delete 1 --force --path=$WP_DIR --allow-root || true
+
+# Substitui o post de exemplo por um post real descrevendo o provisionamento.
+# Isto nao e enfeite: o post e a prova, visivel no browser, de que a instalacao
+# foi concluida por automacao e nao parou na tela de setup do WordPress. Um site
+# vazio com "nada foi encontrado" nao evidencia nada.
 /usr/local/bin/wp post delete 1 --force --path=$WP_DIR --allow-root || true
+
+/usr/local/bin/wp post create \
+  --path=$WP_DIR \
+  --post_type=post \
+  --post_status=publish \
+  --post_title='Provisionado por Terraform' \
+  --post_content="<p>Esta instancia foi criada e configurada por completo por um unico <code>terraform apply</code>, sem nenhum acesso ao console da AWS e sem nenhuma sessao SSH.</p>
+<h2>O que rodou sozinho</h2>
+<ul>
+<li>VPC propria, subnet publica, Internet Gateway e tabela de rotas</li>
+<li>Instancia EC2 t2.micro com Amazon Linux 2023</li>
+<li>Arquivo de swap de ${swap_size_mb} MB, necessario porque a instancia tem 1 GB de RAM</li>
+<li>nginx, PHP-FPM e MariaDB instalados e configurados</li>
+<li>WordPress baixado, banco criado e instalacao concluida</li>
+</ul>
+<h2>Seguranca aplicada no provisionamento</h2>
+<ul>
+<li>Senhas geradas pelo Terraform e guardadas no SSM Parameter Store como SecureString, lidas pela instancia no boot com role IAM de menor privilegio. Nenhuma senha trafegou pelo user_data, que e legivel de dentro da instancia via IMDS</li>
+<li>IMDSv2 obrigatorio, o que fecha o caminho de SSRF para roubo de credencial da role</li>
+<li>Egress do security group restrito porta a porta: apenas 443 para a internet e DNS restrito a propria VPC</li>
+<li>Porta 22 aberta para um unico endereco /32</li>
+<li>Volume EBS cifrado em repouso</li>
+<li>xmlrpc.php bloqueado, execucao de PHP negada em wp-content/uploads, editor de arquivos do painel desabilitado</li>
+</ul>
+<p>Data do provisionamento: $(date -Is)</p>" \
+  --allow-root || echo "aviso: post de demonstracao nao foi criado"
+
+# ------------------------------------------------------------------------------
+# 7b. Endurecimento na camada da aplicacao
+#
+# Must-use plugin: carregado sempre, antes de qualquer outro, e NAO aparece na
+# lista de plugins do painel nem pode ser desativado por ali. Um plugin comum
+# poderia ser desligado por quem tomasse a conta de admin.
+# ------------------------------------------------------------------------------
+echo "--- instalando must-use plugin de hardening ---"
+mkdir -p $WP_DIR/wp-content/mu-plugins
+cat >$WP_DIR/wp-content/mu-plugins/00-newchance-hardening.php <<'MUPLUGIN'
+<?php
+/**
+ * Plugin Name: newchance hardening
+ * Description: Endurecimento aplicado no provisionamento. Must-use: nao pode ser desativado pelo painel.
+ */
+
+// A meta tag generator publica a versao exata do WordPress no HTML de toda
+// pagina. Versao exata e o que permite ao atacante escolher exploit conhecido
+// sem tentativa e erro, e o que faz um scanner automatizado marcar o alvo.
+remove_action('wp_head', 'wp_generator');
+
+// Links de descoberta RSD e wlwmanifest: usados por clientes de publicacao
+// legados e por mais ninguem. Reduzem a superficie sem custo funcional.
+remove_action('wp_head', 'rsd_link');
+remove_action('wp_head', 'wlwmanifest_link');
+
+// A versao tambem aparece no parametro ?ver= de cada CSS e JS carregado.
+// Remover a meta tag e deixar o ?ver=7.1 seria esconder a chave debaixo do tapete.
+function newchance_remove_version_query($src) {
+    if (strpos($src, 'ver=')) {
+        $src = remove_query_arg('ver', $src);
+    }
+    return $src;
+}
+add_filter('style_loader_src', 'newchance_remove_version_query', 10, 1);
+add_filter('script_loader_src', 'newchance_remove_version_query', 10, 1);
+
+// XML-RPC desabilitado tambem na aplicacao, alem do bloqueio no nginx. Duas
+// camadas independentes: se a configuracao do nginx for alterada por engano,
+// a aplicacao continua recusando.
+add_filter('xmlrpc_enabled', '__return_false');
+
+// A mensagem padrao de erro de login diz "a senha que voce informou para o
+// usuario X esta incorreta", o que CONFIRMA que o usuario X existe. Isso
+// permite enumerar nomes validos antes de comecar a forca bruta.
+add_filter('login_errors', function () {
+    return 'Credenciais invalidas.';
+});
+MUPLUGIN
 
 # ------------------------------------------------------------------------------
 # 8. Permissoes de arquivo
@@ -371,6 +455,30 @@ http {
             access_log off;
             log_not_found off;
             return 444;
+        }
+
+        # wp-config.php nunca deve ser alcancavel, nem para execucao. Hoje o
+        # php-fpm o executa e devolve corpo vazio, o que e inofensivo. Mas se o
+        # php-fpm cair ou o handler de PHP for alterado, o nginx passa a servir
+        # .php como arquivo estatico e a senha do banco vai para o mundo em
+        # texto claro. Negar explicitamente remove essa dependencia.
+        location = /wp-config.php {
+            deny all;
+        }
+
+        # Arquivos que revelam a versao exata do WordPress e endpoints legados
+        # sem uso nesta instalacao. readme.html entrega a versao em texto puro;
+        # wp-trackback.php e vetor de spam; wp-links-opml.php expoe dados de
+        # links. Nada disso e usado pelo site.
+        location ~* ^/(readme\.html|license\.txt|wp-links-opml\.php|wp-trackback\.php)$ {
+            deny all;
+        }
+
+        # Instalador e configurador: a instalacao ja foi concluida pelo
+        # provisionamento, portanto estes caminhos so servem a quem quer tentar
+        # reconfigurar o site.
+        location ~* ^/wp-admin/(install|setup-config)\.php$ {
+            deny all;
         }
 
         # Bloqueia execucao de PHP dentro de uploads: e o destino natural de um
