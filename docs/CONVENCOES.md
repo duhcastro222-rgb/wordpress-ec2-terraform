@@ -16,16 +16,16 @@
 
 | Recurso | Nome resultante |
 |---|---|
-| VPC | `wordpress-dev-vpc` |
-| Subnet pública | `wordpress-dev-subnet-public-1a` |
-| Internet Gateway | `wordpress-dev-igw` |
-| Route table | `wordpress-dev-rtb-public` |
-| Security group (web) | `wordpress-dev-sg-web` |
-| Instância EC2 | `wordpress-dev-ec2` |
-| IAM role | `wordpress-dev-role-ec2` |
-| IAM policy | `wordpress-dev-policy-ssm-read` |
-| Instance profile | `wordpress-dev-profile-ec2` |
-| Parâmetro SSM | `/wordpress/dev/db/password` |
+| VPC | `newchance-dev-vpc` |
+| Subnet pública | `newchance-dev-subnet-public-1a` |
+| Internet Gateway | `newchance-dev-igw` |
+| Route table | `newchance-dev-rtb-public` |
+| Security group (web) | `newchance-dev-sg-web` |
+| Instância EC2 | `newchance-dev-ec2` |
+| IAM role | `newchance-dev-role-ec2` |
+| IAM policy | `newchance-dev-policy-ssm-read` |
+| Instance profile | `newchance-dev-profile-ec2` |
+| Parâmetro SSM | `/newchance/dev/db/password` |
 
 **Por quê:** prefixo comum permite localizar, filtrar por tag e destruir tudo do
 projeto sem ambiguidade — importante nesta conta, que é compartilhada com outro
@@ -102,7 +102,7 @@ que suporte tag. Nenhum recurso repete tag manualmente.
 
 | Tag | Valor | Para quê |
 |---|---|---|
-| `Project` | `wordpress-desafio` | Filtro e rateio de custo |
+| `Project` | `newchance` | Filtro e rateio de custo |
 | `Environment` | `dev` | Separar ambiente |
 | `ManagedBy` | `terraform` | Distinguir do que foi criado à mão |
 | `Owner` | `duh.castro` | Conta compartilhada: identifica o responsável |

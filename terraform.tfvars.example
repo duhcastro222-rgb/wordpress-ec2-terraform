@@ -21,8 +21,8 @@ allowed_ssh_cidrs = ["203.0.113.10/32"]
 # Conteudo da sua chave PUBLICA, o arquivo .pub. Nunca a chave privada.
 # Gere um par novo, fora do diretorio do repositorio, com:
 #
-#   ssh-keygen -t ed25519 -f ~/.ssh/wordpress-desafio -C wordpress-desafio
-#   cat ~/.ssh/wordpress-desafio.pub
+#   ssh-keygen -t ed25519 -f ~/.ssh/newchance -C newchance
+#   cat ~/.ssh/newchance.pub
 #
 # Deixando vazio, nenhum key pair e criado e o acesso administrativo acontece
 # via SSM Session Manager, que nao usa chave nem porta aberta.
@@ -32,7 +32,7 @@ ssh_public_key = ""
 # Opcionais: os defaults ja atendem o desafio
 # ------------------------------------------------------------------------------
 # aws_region            = "us-east-1"
-# project_name          = "wordpress"
+# project_name          = "newchance"
 # environment           = "dev"
 # owner                 = "duh.castro"
 # vpc_cidr              = "10.0.0.0/16"
@@ -40,6 +40,6 @@ ssh_public_key = ""
 # instance_type         = "t2.micro"
 # root_volume_size_gb   = 8
 # swap_size_mb          = 2048
-# wordpress_site_title  = "Desafio Terraform"
+# wordpress_site_title  = "NewChance"
 # wordpress_admin_user  = "duh_ops"
 # wordpress_admin_email = "admin@example.com"

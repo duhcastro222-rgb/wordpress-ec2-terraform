@@ -9,9 +9,9 @@ variable "aws_region" {
 }
 
 variable "project_name" {
-  description = "Nome do projeto. Compoe o prefixo de todo nome de recurso."
+  description = "Nome do projeto. Compoe o prefixo de todo nome de recurso e o caminho dos segredos no SSM."
   type        = string
-  default     = "wordpress"
+  default     = "newchance"
 
   validation {
     condition     = can(regex("^[a-z0-9-]{2,20}$", var.project_name))
@@ -144,7 +144,7 @@ variable "wordpress_db_user" {
 variable "wordpress_site_title" {
   description = "Titulo do site WordPress."
   type        = string
-  default     = "Desafio Terraform"
+  default     = "NewChance"
 }
 
 variable "wordpress_admin_user" {

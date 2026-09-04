@@ -6,7 +6,7 @@ provider "aws" {
   # tag Owner e o que permite identificar e destruir apenas o que e nosso.
   default_tags {
     tags = {
-      Project     = "${var.project_name}-desafio"
+      Project     = var.project_name
       Environment = var.environment
       ManagedBy   = "terraform"
       Owner       = var.owner
