@@ -239,6 +239,23 @@ resource "aws_vpc_security_group_ingress_rule" "ssh" {
 # canal de comando e controle, exfiltracao para servidor arbitrario,
 # participacao em ataque a terceiro. Restringir a saida nao impede a invasao,
 # mas encurta muito o que o atacante consegue fazer depois dela.
+#
+# Sobrou UMA unica regra com destino 0.0.0.0/0, a de 443, e ela e inevitavel: a
+# instancia precisa alcancar wordpress.org, os repositorios do Amazon Linux e os
+# endpoints do SSM, que sao enderecos publicos e variaveis. Restringir destino
+# exigiria VPC Endpoints de interface, cobrados por hora, e mesmo assim nao
+# cobriria wordpress.org.
+#
+# Duas outras regras foram REMOVIDAS depois que o Trivy apontou tres achados
+# AWS-0104. A resposta preguicosa seria silenciar os tres no .trivyignore; a
+# revisao mostrou que dois eram sobra, nao excecao:
+#
+#   - 80/tcp de saida: todo o bootstrap usa HTTPS. A regra nunca foi necessaria.
+#   - 123/udp de saida: o Amazon Time Sync fica em 169.254.169.123, endereco
+#     link-local que Security Group nao filtra. A regra nunca teve efeito.
+#
+# Alerta de ferramenta serve para provocar revisao, nao para ser silenciado.
+# Dos tres achados, dois viraram codigo removido e um virou excecao escrita.
 # ------------------------------------------------------------------------------
 
 resource "aws_vpc_security_group_egress_rule" "https" {
@@ -251,19 +268,6 @@ resource "aws_vpc_security_group_egress_rule" "https" {
 
   tags = {
     Name = "${var.name_prefix}-sgr-out-https"
-  }
-}
-
-resource "aws_vpc_security_group_egress_rule" "http" {
-  security_group_id = aws_security_group.web.id
-  description       = "HTTP de saida: redirecionamentos e verificacao de revogacao de certificado"
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "tcp"
-  from_port         = 80
-  to_port           = 80
-
-  tags = {
-    Name = "${var.name_prefix}-sgr-out-http"
   }
 }
 
@@ -290,19 +294,6 @@ resource "aws_vpc_security_group_egress_rule" "dns_tcp" {
 
   tags = {
     Name = "${var.name_prefix}-sgr-out-dns-tcp"
-  }
-}
-
-resource "aws_vpc_security_group_egress_rule" "ntp" {
-  security_group_id = aws_security_group.web.id
-  description       = "NTP de saida: relogio fora de sincronia invalida assinatura de request AWS"
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "udp"
-  from_port         = 123
-  to_port           = 123
-
-  tags = {
-    Name = "${var.name_prefix}-sgr-out-ntp"
   }
 }
 
