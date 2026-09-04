@@ -1,0 +1,379 @@
+#!/bin/bash
+# ==============================================================================
+# Bootstrap do WordPress. Executado uma unica vez pelo cloud-init, no primeiro
+# boot, sem intervencao humana.
+#
+# ATENCAO AO LER ESTE ARQUIVO: ele e um template do Terraform. Um $ seguido de
+# chave e interpolado pelo Terraform ANTES de chegar na instancia. Variaveis do
+# proprio bash sao escritas sem chave ($VAR) exatamente para nao colidirem com
+# a sintaxe de template.
+#
+# Registro completo em /var/log/wordpress-bootstrap.log e tambem em
+# /var/log/cloud-init-output.log.
+# ==============================================================================
+
+exec > >(tee -a /var/log/wordpress-bootstrap.log) 2>&1
+set -euo pipefail
+
+WP_DIR=/var/www/wordpress
+echo "===== bootstrap iniciado em $(date -Is) ====="
+
+# ------------------------------------------------------------------------------
+# 1. Swap
+#
+# t2.micro tem 1 GB de RAM e precisa sustentar MariaDB, PHP-FPM e nginx ao mesmo
+# tempo. Sem swap, o kernel invoca o OOM killer durante a instalacao e o
+# bootstrap morre pela metade, deixando a instancia de pe mas inutil.
+# ------------------------------------------------------------------------------
+if [ ! -f /swapfile ]; then
+  echo "--- criando swap de ${swap_size_mb} MB ---"
+  dd if=/dev/zero of=/swapfile bs=1M count=${swap_size_mb} status=none
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >>/etc/fstab
+  # Prioriza RAM sobre swap: swap aqui e rede de seguranca, nao area de trabalho.
+  sysctl -w vm.swappiness=10
+  echo 'vm.swappiness=10' >/etc/sysctl.d/99-swappiness.conf
+fi
+free -m
+
+# ------------------------------------------------------------------------------
+# 2. Pacotes
+#
+# Separados em dois grupos: o primeiro precisa funcionar, o segundo e desejavel.
+# Uma extensao PHP opcional ausente nao deve derrubar o provisionamento inteiro.
+# ------------------------------------------------------------------------------
+echo "--- instalando pacotes essenciais ---"
+dnf install -y nginx php php-fpm php-mysqlnd
+
+# O nome do pacote do MariaDB muda entre releases do Amazon Linux.
+if ! dnf install -y mariadb105-server; then
+  echo "aviso: mariadb105-server indisponivel, tentando mariadb1011-server"
+  dnf install -y mariadb1011-server
+fi
+
+echo "--- instalando extensoes PHP opcionais ---"
+dnf install -y php-mbstring php-xml php-gd php-opcache || \
+  echo "aviso: alguma extensao PHP opcional nao foi instalada"
+
+# ------------------------------------------------------------------------------
+# 3. Segredos, lidos do SSM Parameter Store
+#
+# Nenhuma senha trafega neste script. O que chega aqui e apenas o CAMINHO do
+# parametro; o valor e buscado em tempo de execucao pela role IAM da instancia.
+# Isso importa porque o user_data e recuperavel por qualquer processo local via
+# IMDS e por qualquer principal com ec2:DescribeInstanceAttribute.
+#
+# O laco de espera existe porque a credencial da role pode nao estar disponivel
+# nos primeiros segundos de boot. Falhar por impaciencia seria falso negativo.
+# ------------------------------------------------------------------------------
+echo "--- lendo segredos do SSM Parameter Store ---"
+DB_PASSWORD=""
+ADMIN_PASSWORD=""
+for tentativa in $(seq 1 30); do
+  if DB_PASSWORD=$(aws ssm get-parameter --name '${db_password_ssm}' \
+    --with-decryption --region ${aws_region} \
+    --query 'Parameter.Value' --output text 2>/dev/null); then
+    echo "segredo do banco obtido na tentativa $tentativa"
+    break
+  fi
+  echo "aguardando credencial da role IAM (tentativa $tentativa de 30)"
+  sleep 5
+done
+
+ADMIN_PASSWORD=$(aws ssm get-parameter --name '${adm_password_ssm}' \
+  --with-decryption --region ${aws_region} \
+  --query 'Parameter.Value' --output text)
+
+if [ -z "$DB_PASSWORD" ] || [ -z "$ADMIN_PASSWORD" ]; then
+  echo "ERRO FATAL: nao foi possivel ler os segredos do SSM. Abortando."
+  exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# 4. Descoberta do proprio IP publico via IMDSv2
+#
+# O WordPress grava a URL do site no banco, portanto precisa saber o endereco
+# antes de instalar. Note o fluxo de duas etapas: PUT para obter token, GET com
+# o token no header. E exatamente por exigir esse PUT que o IMDSv2 quebra o
+# ataque de SSRF que colhia credencial com um GET simples.
+# ------------------------------------------------------------------------------
+echo "--- descobrindo IP publico via IMDSv2 ---"
+IMDS_TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+PUBLIC_IP=$(curl -sf -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+  "http://169.254.169.254/latest/meta-data/public-ipv4")
+echo "IP publico: $PUBLIC_IP"
+
+# ------------------------------------------------------------------------------
+# 5. Banco de dados
+#
+# O WordPress recebe um usuario dedicado, restrito a localhost e com privilegio
+# apenas no proprio banco. Nunca o root do MariaDB: se a aplicacao for
+# comprometida por SQL injection, o atacante herda somente este escopo.
+# ------------------------------------------------------------------------------
+echo "--- configurando MariaDB ---"
+systemctl enable --now mariadb
+
+mysql -u root <<SQL
+CREATE DATABASE IF NOT EXISTS \`${db_name}\`
+  DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${db_user}'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+ALTER USER '${db_user}'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+GRANT ALL PRIVILEGES ON \`${db_name}\`.* TO '${db_user}'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+
+# Remocao dos defaults inseguros do MariaDB. Best-effort: o nome da tabela de
+# privilegios varia entre versoes e isso nao deve abortar o provisionamento.
+echo "--- removendo defaults inseguros do MariaDB ---"
+mysql -u root -e "DELETE FROM mysql.global_priv WHERE User='';" 2>/dev/null || \
+  mysql -u root -e "DELETE FROM mysql.user WHERE User='';" 2>/dev/null || \
+  echo "aviso: nao foi possivel remover usuarios anonimos"
+mysql -u root -e "DROP DATABASE IF EXISTS test;" 2>/dev/null || true
+mysql -u root -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+
+# ------------------------------------------------------------------------------
+# 6. PHP-FPM
+#
+# Ajuste de capacidade obrigatorio: o pm.max_children padrao chega a 50, e 50
+# processos PHP em 1 GB de RAM garantem OOM sob qualquer carga real.
+# ------------------------------------------------------------------------------
+echo "--- ajustando PHP-FPM para 1 GB de RAM ---"
+FPM_CONF=/etc/php-fpm.d/www.conf
+sed -i 's/^user = .*/user = nginx/' $FPM_CONF
+sed -i 's/^group = .*/group = nginx/' $FPM_CONF
+sed -i 's|^listen = .*|listen = /run/php-fpm/www.sock|' $FPM_CONF
+sed -i 's/^;*listen.owner = .*/listen.owner = nginx/' $FPM_CONF
+sed -i 's/^;*listen.group = .*/listen.group = nginx/' $FPM_CONF
+sed -i 's/^;*listen.mode = .*/listen.mode = 0660/' $FPM_CONF
+sed -i 's/^pm.max_children = .*/pm.max_children = 5/' $FPM_CONF
+sed -i 's/^pm.start_servers = .*/pm.start_servers = 2/' $FPM_CONF
+sed -i 's/^pm.min_spare_servers = .*/pm.min_spare_servers = 1/' $FPM_CONF
+sed -i 's/^pm.max_spare_servers = .*/pm.max_spare_servers = 3/' $FPM_CONF
+
+cat >/etc/php.d/99-wordpress.ini <<'PHPINI'
+memory_limit = 128M
+upload_max_filesize = 16M
+post_max_size = 16M
+max_execution_time = 60
+
+; expose_php = Off remove o header X-Powered-By, que entrega a versao exata do
+; PHP e permite ao atacante escolher exploit sem tentativa e erro.
+expose_php = Off
+
+; Mensagem de erro nunca vai para o browser: stack trace revela caminho
+; absoluto, versao de biblioteca e as vezes credencial.
+display_errors = Off
+log_errors = On
+error_log = /var/log/php-fpm/wordpress-error.log
+PHPINI
+
+systemctl enable --now php-fpm
+systemctl restart php-fpm
+
+# ------------------------------------------------------------------------------
+# 7. WordPress via WP-CLI
+#
+# WP-CLI executa a instalacao completa sem o assistente web. Sem isso o browser
+# abriria na tela de setup, o que significaria um passo manual e portanto uma
+# violacao do requisito de automacao total.
+# ------------------------------------------------------------------------------
+echo "--- instalando WP-CLI ---"
+curl -sfL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+  -o /usr/local/bin/wp
+chmod 755 /usr/local/bin/wp
+/usr/local/bin/wp --info --allow-root
+
+echo "--- baixando WordPress em pt_BR ---"
+mkdir -p $WP_DIR
+/usr/local/bin/wp core download --path=$WP_DIR --locale=pt_BR --allow-root
+
+echo "--- gerando wp-config.php ---"
+# O wp-config e criado pelo WP-CLI, que gera salts unicos. Salt reaproveitado
+# entre instalacoes permite forjar cookie de sessao valido.
+/usr/local/bin/wp config create \
+  --path=$WP_DIR \
+  --dbname='${db_name}' \
+  --dbuser='${db_user}' \
+  --dbpass="$DB_PASSWORD" \
+  --dbhost=localhost \
+  --dbcharset=utf8mb4 \
+  --locale=pt_BR \
+  --allow-root \
+  --extra-php <<'PHPEXTRA'
+
+// Desabilita o editor de temas e plugins do painel. Com ele ativo, um unico
+// cookie de admin roubado permite escrever PHP arbitrario no servidor, o que
+// transforma comprometimento de conta em execucao remota de codigo.
+define('DISALLOW_FILE_EDIT', true);
+
+// Atualizacao automatica de seguranca do core habilitada: o CVE de WordPress
+// desatualizado e o vetor de invasao mais explorado da plataforma.
+define('WP_AUTO_UPDATE_CORE', 'minor');
+
+// Impede que usuarios nao administradores publiquem HTML nao filtrado,
+// fechando um caminho comum de XSS armazenado.
+define('DISALLOW_UNFILTERED_HTML', true);
+
+define('WP_MEMORY_LIMIT', '96M');
+define('WP_DEBUG', false);
+define('WP_DEBUG_DISPLAY', false);
+PHPEXTRA
+
+echo "--- executando instalacao do WordPress ---"
+/usr/local/bin/wp core install \
+  --path=$WP_DIR \
+  --url="http://$PUBLIC_IP" \
+  --title='${site_title}' \
+  --admin_user='${admin_user}' \
+  --admin_password="$ADMIN_PASSWORD" \
+  --admin_email='${admin_email}' \
+  --skip-email \
+  --allow-root
+
+# Remove o plugin Hello Dolly e o tema de exemplo: superficie de ataque que
+# ninguem usa continua sendo superficie de ataque.
+/usr/local/bin/wp plugin delete hello --path=$WP_DIR --allow-root || true
+/usr/local/bin/wp post delete 1 --force --path=$WP_DIR --allow-root || true
+
+# ------------------------------------------------------------------------------
+# 8. Permissoes de arquivo
+#
+# Diretorio 755, arquivo 644, wp-config.php 640. O wp-config guarda a senha do
+# banco em texto claro; com 644 qualquer usuario local o le, inclusive um
+# processo comprometido rodando com outra identidade.
+# ------------------------------------------------------------------------------
+echo "--- aplicando permissoes ---"
+chown -R nginx:nginx $WP_DIR
+find $WP_DIR -type d -exec chmod 755 {} +
+find $WP_DIR -type f -exec chmod 644 {} +
+chmod 640 $WP_DIR/wp-config.php
+
+# ------------------------------------------------------------------------------
+# 9. nginx
+#
+# nginx.conf e reescrito por completo em vez de acrescentar um arquivo em
+# conf.d. Motivo: o nginx.conf do Amazon Linux ja traz um server block com
+# default_server na porta 80, e um segundo default_server faz o nginx recusar
+# a subir com "duplicate default server".
+# ------------------------------------------------------------------------------
+echo "--- configurando nginx ---"
+cat >/etc/nginx/nginx.conf <<'NGINXCONF'
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log /var/log/nginx/access.log main;
+
+    sendfile           on;
+    tcp_nopush         on;
+    keepalive_timeout  65;
+    client_max_body_size 16m;
+
+    # Nao anunciar a versao do nginx: reduz o valor do banner para quem faz
+    # reconhecimento automatizado em busca de versao com CVE conhecido.
+    server_tokens off;
+
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+
+    server {
+        listen      80 default_server;
+        server_name _;
+        root        /var/www/wordpress;
+        index       index.php index.html;
+
+        # Cabecalhos de seguranca.
+        # nosniff impede o browser de adivinhar o tipo de conteudo, o que evita
+        # que um upload de texto seja executado como script.
+        add_header X-Content-Type-Options "nosniff" always;
+        # SAMEORIGIN impede que o site seja embutido em iframe de terceiro,
+        # que e a base do ataque de clickjacking sobre o painel admin.
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        # Limita o vazamento da URL de origem para sites externos.
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header X-Permitted-Cross-Domain-Policies "none" always;
+
+        location / {
+            try_files $uri $uri/ /index.php?$args;
+        }
+
+        location ~ \.php$ {
+            try_files $uri =404;
+            include        fastcgi_params;
+            fastcgi_pass   unix:/run/php-fpm/www.sock;
+            fastcgi_index  index.php;
+            fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_read_timeout 60;
+        }
+
+        # xmlrpc.php aceita centenas de tentativas de senha em uma unica
+        # requisicao (system.multicall) e ainda serve de amplificador de DDoS
+        # por pingback. Nao e usado por nada nesta instalacao.
+        location = /xmlrpc.php {
+            deny all;
+            access_log off;
+            log_not_found off;
+            return 444;
+        }
+
+        # Bloqueia execucao de PHP dentro de uploads: e o destino natural de um
+        # upload malicioso e o caminho mais curto para webshell.
+        location ~* ^/wp-content/uploads/.*\.php$ {
+            deny all;
+        }
+
+        # Arquivos ocultos, backups e dumps eventualmente esquecidos na raiz.
+        location ~ /\. {
+            deny all;
+        }
+        location ~* \.(sql|bak|log|ini|old|swp)$ {
+            deny all;
+        }
+
+        # Expoe apenas o necessario de wp-includes.
+        location ~* ^/wp-includes/.*\.php$ {
+            deny all;
+        }
+    }
+}
+NGINXCONF
+
+nginx -t
+systemctl enable --now nginx
+systemctl restart nginx
+
+# ------------------------------------------------------------------------------
+# 10. Verificacao final, feita pela propria instancia
+#
+# Confirmar aqui evita a situacao de terraform apply com sucesso e site fora do
+# ar: se algo falhou, a evidencia fica registrada no log da instancia.
+# ------------------------------------------------------------------------------
+echo "--- verificando resposta HTTP local ---"
+HTTP_CODE=$(curl -s -o /dev/null -w '%%{http_code}' http://localhost/ || echo "000")
+echo "HTTP local respondeu: $HTTP_CODE"
+
+systemctl is-active mariadb php-fpm nginx || true
+
+if [ "$HTTP_CODE" = "200" ]; then
+  echo "===== bootstrap concluido com sucesso em $(date -Is) ====="
+  echo "$(date -Is) OK http=$HTTP_CODE url=http://$PUBLIC_IP" >/var/log/wordpress-bootstrap-done
+else
+  echo "===== bootstrap terminou com HTTP $HTTP_CODE em $(date -Is) ====="
+  echo "$(date -Is) FALHA http=$HTTP_CODE" >/var/log/wordpress-bootstrap-done
+  exit 1
+fi
