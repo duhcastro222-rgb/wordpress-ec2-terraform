@@ -1,0 +1,45 @@
+# ==============================================================================
+# Copie este arquivo para terraform.tfvars e ajuste os valores:
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# terraform.tfvars esta no .gitignore e NUNCA deve ser versionado.
+# Este .example existe para documentar as variaveis sem expor nenhum valor real.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Necessario para habilitar SSH
+# ------------------------------------------------------------------------------
+# Sem esta variavel nao existe nenhuma regra na porta 22 (padrao fail-closed).
+# Descubra seu IP publico atual com:
+#
+#   curl https://checkip.amazonaws.com
+#
+# Use sempre mascara /32. A validacao rejeita 0.0.0.0/0.
+allowed_ssh_cidrs = ["203.0.113.10/32"]
+
+# Conteudo da sua chave PUBLICA, o arquivo .pub. Nunca a chave privada.
+# Gere um par novo, fora do diretorio do repositorio, com:
+#
+#   ssh-keygen -t ed25519 -f ~/.ssh/wordpress-desafio -C wordpress-desafio
+#   cat ~/.ssh/wordpress-desafio.pub
+#
+# Deixando vazio, nenhum key pair e criado e o acesso administrativo acontece
+# via SSM Session Manager, que nao usa chave nem porta aberta.
+ssh_public_key = ""
+
+# ------------------------------------------------------------------------------
+# Opcionais: os defaults ja atendem o desafio
+# ------------------------------------------------------------------------------
+# aws_region            = "us-east-1"
+# project_name          = "wordpress"
+# environment           = "dev"
+# owner                 = "duh.castro"
+# vpc_cidr              = "10.0.0.0/16"
+# public_subnet_cidr    = "10.0.1.0/24"
+# instance_type         = "t2.micro"
+# root_volume_size_gb   = 8
+# swap_size_mb          = 2048
+# wordpress_site_title  = "Desafio Terraform"
+# wordpress_admin_user  = "duh_ops"
+# wordpress_admin_email = "admin@example.com"
