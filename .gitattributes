@@ -1,0 +1,16 @@
+# Normaliza terminacao de linha no repositorio.
+* text=auto eol=lf
+
+# CRITICO: estes arquivos sao executados por bash no Linux (via cloud-init).
+# Com CRLF o shell falha com "$'\r': command not found" dentro do user_data,
+# onde nao ha como debugar sem SSH. Forcar LF nao e estetica, e funcional.
+*.sh        text eol=lf
+*.tftpl     text eol=lf
+*.tf        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binarios: nunca converter.
+*.png       binary
+*.jpg       binary
+*.gif       binary

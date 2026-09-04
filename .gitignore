@@ -1,0 +1,52 @@
+# ==============================================================================
+# Terraform
+# ==============================================================================
+# O state guarda TODOS os valores gerenciados em texto claro, incluindo
+# random_password e outputs sensitive. Versionar state = vazar credencial.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Plans em binario tambem carregam valores de variaveis sensiveis.
+*.tfplan
+*.tfplan.*
+
+# Diretorio de providers/modulos baixados (centenas de MB, nao e codigo fonte).
+.terraform/
+.terraform.lock.hcl.bak
+
+# ==============================================================================
+# Variaveis com valor real (IP publico, chave SSH, nomes de conta)
+# Versionamos APENAS o .example, nunca o valor.
+# ==============================================================================
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+.auto.tfvars
+
+# ==============================================================================
+# Credenciais e chaves
+# ==============================================================================
+.env
+.env.*
+*.pem
+*.ppk
+*.key
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+.aws/
+credentials
+
+# ==============================================================================
+# Sistema operacional / editor
+# ==============================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
