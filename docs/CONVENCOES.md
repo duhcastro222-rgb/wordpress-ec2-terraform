@@ -130,32 +130,41 @@ Fluxo: `feature/*` → PR → `develop` → PR → `main`.
 
 ## 8. Commits
 
-**Formato:** `:emoji: tipo: descrição no imperativo`
+**Formato:** `tipo: descrição no imperativo`
 
-Segue [iuricode/padroes-de-commits](https://github.com/iuricode/padroes-de-commits).
-Emoji em *shortcode* (`:sparkles:`) e não em caractere Unicode — o GitHub
-renderiza igual e evita problema de encoding entre Windows e Linux.
+Segue a especificação [Conventional Commits](https://www.conventionalcommits.org),
+usando o conjunto de tipos de
+[iuricode/padroes-de-commits](https://github.com/iuricode/padroes-de-commits)
+como referência de vocabulário.
 
-| Emoji | Tipo | Quando |
-|---|---|---|
-| `:tada:` | `init` | Commit inicial |
-| `:sparkles:` | `feat` | Recurso novo |
-| `:bug:` | `fix` | Correção de bug |
-| `:books:` | `docs` | Documentação do projeto |
-| `:bricks:` | `ci` | Pipeline / CI |
-| `:wrench:` | `chore` | Configuração, tarefa administrativa |
-| `:recycle:` | `refactor` | Reestruturação de código |
-| `:lock:` | `security` | Melhoria de segurança |
-| `:broom:` | `cleanup` | Remoção de código morto |
+**Sem emoji, por decisão explícita.** A especificação Conventional Commits
+define `tipo(escopo): descrição` e não prevê emoji; o emoji é um acréscimo da
+referência brasileira. Mensagem de commit é lida por ferramenta (`git log
+--grep`, geradores de changelog, parsers de release) e por pessoa em terminal,
+onde emoji atrapalha alinhamento e não sobrevive a todo encoding. O tipo já
+carrega a semântica inteira — o emoji é redundância decorativa.
+
+| Tipo | Quando usar |
+|---|---|
+| `feat` | Funcionalidade ou recurso novo |
+| `fix` | Correção de bug |
+| `docs` | Documentação do projeto |
+| `ci` | Pipeline, automação, GitHub Actions |
+| `chore` | Configuração e tarefa administrativa |
+| `refactor` | Reestruturação sem mudança de comportamento |
+| `test` | Testes |
+| `perf` | Otimização de desempenho |
+| `build` | Dependências e empacotamento |
 
 Descrição em **português, imperativo, minúscula, sem ponto final**, no máximo
-~60 caracteres. Corpo do commit explica o *porquê*, nunca o *o quê* (o diff já
-mostra o quê).
+~60 caracteres. Corpo do commit explica o *porquê*, nunca o *o quê* — o diff já
+mostra o quê.
 
 ```
-:sparkles: feat: adiciona modulo de rede          # certo
-:sparkles: feat: Adicionado o módulo de rede.     # errado: particípio + ponto
-feat: adiciona modulo de rede                     # errado: falta emoji
+feat: adiciona modulo de rede                # certo
+feat: Adicionado o módulo de rede.           # errado: particípio e ponto final
+adiciona modulo de rede                      # errado: falta o tipo
+feat: adiciona modulo de rede e corrige ci   # errado: duas mudanças num commit
 ```
 
 ---
