@@ -16,16 +16,16 @@
 
 | Recurso | Nome resultante |
 |---|---|
-| VPC | `wordpress-dev-vpc` |
-| Subnet pública | `wordpress-dev-subnet-public-1a` |
-| Internet Gateway | `wordpress-dev-igw` |
-| Route table | `wordpress-dev-rtb-public` |
-| Security group (web) | `wordpress-dev-sg-web` |
-| Instância EC2 | `wordpress-dev-ec2` |
-| IAM role | `wordpress-dev-role-ec2` |
-| IAM policy | `wordpress-dev-policy-ssm-read` |
-| Instance profile | `wordpress-dev-profile-ec2` |
-| Parâmetro SSM | `/wordpress/dev/db/password` |
+| VPC | `newchance-dev-vpc` |
+| Subnet pública | `newchance-dev-subnet-public-1a` |
+| Internet Gateway | `newchance-dev-igw` |
+| Route table | `newchance-dev-rtb-public` |
+| Security group (web) | `newchance-dev-sg-web` |
+| Instância EC2 | `newchance-dev-ec2` |
+| IAM role | `newchance-dev-role-ec2` |
+| IAM policy | `newchance-dev-policy-ssm-read` |
+| Instance profile | `newchance-dev-profile-ec2` |
+| Parâmetro SSM | `/newchance/dev/db/password` |
 
 **Por quê:** prefixo comum permite localizar, filtrar por tag e destruir tudo do
 projeto sem ambiguidade — importante nesta conta, que é compartilhada com outro
@@ -102,7 +102,7 @@ que suporte tag. Nenhum recurso repete tag manualmente.
 
 | Tag | Valor | Para quê |
 |---|---|---|
-| `Project` | `wordpress-desafio` | Filtro e rateio de custo |
+| `Project` | `newchance` | Filtro e rateio de custo |
 | `Environment` | `dev` | Separar ambiente |
 | `ManagedBy` | `terraform` | Distinguir do que foi criado à mão |
 | `Owner` | `duh.castro` | Conta compartilhada: identifica o responsável |
@@ -130,32 +130,37 @@ Fluxo: `feature/*` → PR → `develop` → PR → `main`.
 
 ## 8. Commits
 
-**Formato:** `:emoji: tipo: descrição no imperativo`
+**Formato:** `tipo: descrição no imperativo`
 
-Segue [iuricode/padroes-de-commits](https://github.com/iuricode/padroes-de-commits).
-Emoji em *shortcode* (`:sparkles:`) e não em caractere Unicode — o GitHub
-renderiza igual e evita problema de encoding entre Windows e Linux.
+Segue a especificação [Conventional Commits](https://www.conventionalcommits.org),
+usando o conjunto de tipos de
+[iuricode/padroes-de-commits](https://github.com/iuricode/padroes-de-commits)
+como referência de vocabulário.
 
-| Emoji | Tipo | Quando |
-|---|---|---|
-| `:tada:` | `init` | Commit inicial |
-| `:sparkles:` | `feat` | Recurso novo |
-| `:bug:` | `fix` | Correção de bug |
-| `:books:` | `docs` | Documentação do projeto |
-| `:bricks:` | `ci` | Pipeline / CI |
-| `:wrench:` | `chore` | Configuração, tarefa administrativa |
-| `:recycle:` | `refactor` | Reestruturação de código |
-| `:lock:` | `security` | Melhoria de segurança |
-| `:broom:` | `cleanup` | Remoção de código morto |
+Sem emoji: a mensagem carrega apenas `tipo: descrição`, conforme a
+especificação.
+
+| Tipo | Quando usar |
+|---|---|
+| `feat` | Funcionalidade ou recurso novo |
+| `fix` | Correção de bug |
+| `docs` | Documentação do projeto |
+| `ci` | Pipeline, automação, GitHub Actions |
+| `chore` | Configuração e tarefa administrativa |
+| `refactor` | Reestruturação sem mudança de comportamento |
+| `test` | Testes |
+| `perf` | Otimização de desempenho |
+| `build` | Dependências e empacotamento |
 
 Descrição em **português, imperativo, minúscula, sem ponto final**, no máximo
-~60 caracteres. Corpo do commit explica o *porquê*, nunca o *o quê* (o diff já
-mostra o quê).
+~60 caracteres. Corpo do commit explica o *porquê*, nunca o *o quê* — o diff já
+mostra o quê.
 
 ```
-:sparkles: feat: adiciona modulo de rede          # certo
-:sparkles: feat: Adicionado o módulo de rede.     # errado: particípio + ponto
-feat: adiciona modulo de rede                     # errado: falta emoji
+feat: adiciona modulo de rede                # certo
+feat: Adicionado o módulo de rede.           # errado: particípio e ponto final
+adiciona modulo de rede                      # errado: falta o tipo
+feat: adiciona modulo de rede e corrige ci   # errado: duas mudanças num commit
 ```
 
 ---
